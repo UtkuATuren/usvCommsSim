@@ -9,6 +9,9 @@ class CommandCode(IntEnum):
     MOVE = 0x01
     TURN = 0x02
     STOP = 0x03
+    ASCEND = 0x04
+    DESCEND = 0x05
+    REPORT_STATUS = 0x06
 
 class PacketFormatter:
     """

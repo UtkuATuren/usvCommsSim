@@ -102,7 +102,11 @@ class Submarine:
     sensors: EnvironmentalSensors = None
     
     # Navigation and safety
-    max_safe_distance_from_ship: float = 800.0  # meters
+    max_safe_distance_from_ship: float = 2000.0  # meters (increased for realistic testing)
+    
+    # NEW EXPERIMENTAL MOVEMENT PARAMETERS
+    max_operational_range: float = 15000.0  # Total distance submarine can travel
+    movement_aggressiveness: float = 0.7  # How aggressively to explore (0.1-1.0)
     
     def __post_init__(self):
         if self.sensors is None:
@@ -202,15 +206,16 @@ class Submarine:
             new_y = self.position.y + param * math.sin(rad)
             new_distance = math.sqrt(new_x**2 + new_y**2)  # Distance from ship at origin
             
-            # Check communication range
-            if new_distance > self.max_safe_distance_from_ship:
-                return False, f"move_would_exceed_safe_distance_{new_distance:.1f}m"
+            # Check communication range - use the actual max_safe_distance_from_ship 
+            effective_max_distance = self.max_safe_distance_from_ship * self.movement_aggressiveness
+            if new_distance > effective_max_distance:
+                return False, f"move_would_exceed_safe_distance_{new_distance:.1f}m_max_{effective_max_distance:.1f}m"
             
-            # Check world bounds (assuming world_size from game state context)
-            # Use a conservative estimate of world size
-            world_boundary = 400.0  # Conservative boundary
+            # Check world bounds - use a much more generous boundary based on max operational range
+            # Allow movement up to max operational range but with safety margin
+            world_boundary = min(self.max_operational_range * 0.8, 50000.0)  # Conservative but much larger limit
             if abs(new_x) > world_boundary or abs(new_y) > world_boundary:
-                return False, f"move_would_exceed_world_bounds_x{new_x:.1f}_y{new_y:.1f}"
+                return False, f"move_would_exceed_world_bounds_x{new_x:.1f}_y{new_y:.1f}_max{world_boundary:.1f}m"
         
         elif cmd == CommandCode.DESCEND:
             new_depth = self.depth + param

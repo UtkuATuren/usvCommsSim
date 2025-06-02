@@ -40,7 +40,9 @@ class MissionPlanner:
             return self._plan_emergency_return()
         
         # Safety check: if too far from ship, prioritize return
-        if ship_distance > submarine.max_safe_distance_from_ship * 0.8:  # 80% of max safe distance
+        # Use the effective max distance considering movement aggressiveness
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        if ship_distance > effective_max_distance * 0.8:  # 80% of effective max distance
             return self._plan_return_to_ship()
         
         # If we have a command sequence, continue it
@@ -135,14 +137,20 @@ class MissionPlanner:
     
     def _plan_spiral_search(self):
         """Plan a spiral search pattern with distance constraints"""
-        # Reduce movement distance if far from ship
-        distance_factor = max(0.3, 1.0 - (self.last_ship_distance / 800.0))
-        move_distance = min(30, int((5 + self.search_radius) * distance_factor))
+        submarine = self.game_state.submarine
+        
+        # Calculate distance factor based on movement aggressiveness and max range
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        distance_factor = max(0.2, 1.0 - (self.last_ship_distance / effective_max_distance))
+        
+        # Base movement distance scaled by submarine speed and aggressiveness
+        base_move = submarine.speed * submarine.movement_aggressiveness
+        move_distance = min(int(base_move * 2), int((10 + self.search_radius * 3) * distance_factor))
         
         self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
         
-        # Turn for spiral
-        turn_angle = 45 + (self.search_radius * 2)
+        # Turn for spiral - larger angles for more aggressive exploration
+        turn_angle = int(30 + (self.search_radius * 3 * submarine.movement_aggressiveness))
         self.commands_in_sequence.append((CommandCode.TURN, turn_angle))
         
         # Occasionally change depth
@@ -153,37 +161,52 @@ class MissionPlanner:
                 self.commands_in_sequence.append((CommandCode.DESCEND, random.randint(5, 15)))
         
         self.search_radius += 1
-        if self.search_radius > 15:  # Reduced from 20 for safety
+        # Scale max search radius based on aggressiveness
+        max_search_radius = int(15 + (submarine.movement_aggressiveness * 20))
+        if self.search_radius > max_search_radius:
             self.search_radius = 0
     
     def _plan_grid_search(self):
         """Plan a grid search pattern with distance constraints"""
-        # Reduce movement distance if far from ship
-        distance_factor = max(0.3, 1.0 - (self.last_ship_distance / 800.0))
-        move_distance = min(40, int(40 * distance_factor))
+        submarine = self.game_state.submarine
+        
+        # Calculate distance factor based on movement aggressiveness and max range
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        distance_factor = max(0.2, 1.0 - (self.last_ship_distance / effective_max_distance))
+        
+        # Base movement distance scaled by submarine speed and aggressiveness
+        base_move = submarine.speed * submarine.movement_aggressiveness * 3
+        move_distance = min(int(base_move * 2), int(80 * distance_factor))
         
         # Simple back-and-forth pattern
         if self.search_angle % 180 == 0:
             self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
             self.commands_in_sequence.append((CommandCode.TURN, 90))
-            self.commands_in_sequence.append((CommandCode.MOVE, 20))
+            self.commands_in_sequence.append((CommandCode.MOVE, int(submarine.speed * 2)))
             self.commands_in_sequence.append((CommandCode.TURN, 90))
         else:
             self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
             self.commands_in_sequence.append((CommandCode.TURN, -90))
-            self.commands_in_sequence.append((CommandCode.MOVE, 20))
+            self.commands_in_sequence.append((CommandCode.MOVE, int(submarine.speed * 2)))
             self.commands_in_sequence.append((CommandCode.TURN, -90))
         
         self.search_angle += 180
     
     def _plan_random_search(self):
         """Plan random exploration with distance constraints"""
-        # Reduce movement distance if far from ship
-        distance_factor = max(0.3, 1.0 - (self.last_ship_distance / 800.0))
-        move_distance = min(50, int(random.randint(20, 50) * distance_factor))
+        submarine = self.game_state.submarine
+        
+        # Calculate distance factor based on movement aggressiveness and max range
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        distance_factor = max(0.2, 1.0 - (self.last_ship_distance / effective_max_distance))
+        
+        # Base movement distance scaled by submarine speed and aggressiveness
+        base_move = submarine.speed * submarine.movement_aggressiveness * 4
+        move_distance = min(int(base_move * 3), int(random.randint(30, 100) * distance_factor))
         
         # Random movement with some logic
-        self.commands_in_sequence.append((CommandCode.TURN, random.randint(-90, 90)))
+        turn_range = int(90 * submarine.movement_aggressiveness)
+        self.commands_in_sequence.append((CommandCode.TURN, random.randint(-turn_range, turn_range)))
         self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
         
         # Random depth changes

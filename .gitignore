@@ -1,0 +1,5 @@
+*.csv
+outputs/*/*.csv
+outputs/*/*/*.csv
+outputs/*.csv
+*.xlsx

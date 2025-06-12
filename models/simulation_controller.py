@@ -22,12 +22,18 @@ class MissionPlanner:
     def __init__(self, game_state: GameState):
         self.game_state = game_state
         self.current_objective = None
-        self.search_pattern = "spiral"  # "spiral", "grid", "random"
+        self.search_pattern = "spiral"  # "spiral", "grid", "random", "3d_sweep", "depth_layers"
         self.search_radius = 0
         self.search_angle = 0
         self.commands_in_sequence = []
         self.sequence_index = 0
         self.last_ship_distance = 0.0
+        
+        # Enhanced depth management
+        self.depth_pattern_cycle = 0
+        self.target_depth_layer = 30  # Current target depth for layered search
+        self.depth_sweep_direction = 1  # 1 for descending, -1 for ascending
+        self.depth_layer_timer = 0  # Commands spent at current depth layer
         
     def get_next_command(self) -> Tuple[CommandCode, int]:
         """Generate the next logical command based on mission state"""
@@ -67,8 +73,8 @@ class MissionPlanner:
             self.sequence_index = 1
             return cmd, param
         
-        # Fallback to status report
-        return CommandCode.REPORT_STATUS, 0
+        # Fallback to small movement
+        return CommandCode.MOVE, 5
     
     def _plan_return_to_ship(self) -> Tuple[CommandCode, int]:
         """Plan commands to return submarine closer to ship"""
@@ -116,27 +122,224 @@ class MissionPlanner:
         return CommandCode.MOVE, int(move_distance)
     
     def _plan_next_sequence(self):
-        """Plan the next sequence of commands with safety considerations"""
+        """Plan the next sequence of commands with enhanced depth patterns"""
         submarine = self.game_state.submarine
         self.commands_in_sequence = []
         self.sequence_index = 0
         
-        # Check if we need to adjust depth for better detection
-        if submarine.depth < 10:
-            self.commands_in_sequence.append((CommandCode.DESCEND, 10))
-        elif submarine.depth > 80:
-            self.commands_in_sequence.append((CommandCode.ASCEND, 20))
+        # Enhanced depth management - more frequent and systematic depth changes
+        depth_action_needed = self._should_change_depth()
+        if depth_action_needed:
+            depth_cmd, depth_param = self._plan_depth_change()
+            self.commands_in_sequence.append((depth_cmd, depth_param))
         
-        # Implement search pattern with safety constraints
+        # Implement enhanced search patterns with 3D awareness
         if self.search_pattern == "spiral":
             self._plan_spiral_search()
         elif self.search_pattern == "grid":
             self._plan_grid_search()
+        elif self.search_pattern == "3d_sweep":
+            self._plan_3d_sweep_search()
+        elif self.search_pattern == "depth_layers":
+            self._plan_depth_layer_search()
         else:
             self._plan_random_search()
     
+    def _should_change_depth(self) -> bool:
+        """Determine if depth change is needed - much more aggressive depth management"""
+        submarine = self.game_state.submarine
+        
+        # Safety boundaries - immediate depth change needed
+        if submarine.depth < 5:  # Too shallow
+            return True
+        if submarine.depth > 90:  # Too deep
+            return True
+            
+        # Systematic depth changes for better ML training data
+        # Change depth every 3-5 commands instead of randomly
+        self.depth_pattern_cycle += 1
+        
+        # More frequent depth changes based on pattern cycle
+        if self.depth_pattern_cycle % 3 == 0:  # Every 3rd sequence
+            return True
+            
+        # Pattern-specific depth requirements
+        if self.search_pattern == "3d_sweep" or self.search_pattern == "depth_layers":
+            return True  # These patterns always include depth changes
+            
+        # Distance-based depth optimization for better coverage
+        distance_factor = self.last_ship_distance / submarine.max_safe_distance_from_ship
+        if distance_factor > 0.2 and self.depth_pattern_cycle % 2 == 0:
+            return True  # More frequent changes when farther from ship
+            
+        # Additional depth change triggers for better balance
+        if self.depth_pattern_cycle % 5 == 0:  # Regular interval depth changes
+            return True
+            
+        return False
+    
+    def _plan_depth_change(self) -> Tuple[CommandCode, int]:
+        """Plan strategic depth changes for better 3D coverage"""
+        submarine = self.game_state.submarine
+        current_depth = submarine.depth
+        
+        # Safety boundaries first
+        if current_depth < 5:
+            return CommandCode.DESCEND, random.randint(15, 25)
+        if current_depth > 90:
+            return CommandCode.ASCEND, random.randint(15, 25)
+        
+        # Strategic depth targeting based on search pattern
+        if self.search_pattern == "depth_layers":
+            return self._plan_layer_depth_change()
+        elif self.search_pattern == "3d_sweep":
+            return self._plan_sweep_depth_change()
+        else:
+            return self._plan_general_depth_change()
+    
+    def _plan_layer_depth_change(self) -> Tuple[CommandCode, int]:
+        """Plan depth changes for layered search pattern"""
+        submarine = self.game_state.submarine
+        current_depth = submarine.depth
+        
+        # Define depth layers for systematic coverage
+        depth_layers = [15, 30, 45, 60, 75]  # 5 distinct layers
+        
+        # Find closest layer or move to target layer
+        target_layer = depth_layers[self.depth_pattern_cycle % len(depth_layers)]
+        self.target_depth_layer = target_layer
+        
+        depth_diff = target_layer - current_depth
+        if abs(depth_diff) > 3:  # Need significant depth change
+            if depth_diff > 0:
+                return CommandCode.DESCEND, min(abs(depth_diff), 20)
+            else:
+                return CommandCode.ASCEND, min(abs(depth_diff), 20)
+        
+        # Stay at current layer - make small depth adjustment
+        if random.random() < 0.5:
+            return CommandCode.ASCEND, random.randint(3, 8)
+        else:
+            return CommandCode.DESCEND, random.randint(3, 8)
+    
+    def _plan_sweep_depth_change(self) -> Tuple[CommandCode, int]:
+        """Plan depth changes for 3D sweep pattern"""
+        submarine = self.game_state.submarine
+        
+        # Continuous depth sweeping
+        if self.depth_sweep_direction == 1:  # Descending
+            if submarine.depth > 80:
+                self.depth_sweep_direction = -1
+                return CommandCode.ASCEND, random.randint(10, 20)
+            else:
+                return CommandCode.DESCEND, random.randint(8, 15)
+        else:  # Ascending
+            if submarine.depth < 15:
+                self.depth_sweep_direction = 1
+                return CommandCode.DESCEND, random.randint(10, 20)
+            else:
+                return CommandCode.ASCEND, random.randint(8, 15)
+    
+    def _plan_general_depth_change(self) -> Tuple[CommandCode, int]:
+        """Plan general depth changes for varied coverage"""
+        submarine = self.game_state.submarine
+        
+        # Strategic depth zones for optimal detection
+        optimal_zones = [(20, 35), (40, 55), (60, 75)]  # Different depth ranges
+        current_depth = submarine.depth
+        
+        # Choose a target zone different from current
+        current_zone = None
+        for i, (min_d, max_d) in enumerate(optimal_zones):
+            if min_d <= current_depth <= max_d:
+                current_zone = i
+                break
+        
+        # Move to a different zone
+        if current_zone is not None:
+            target_zone = (current_zone + 1) % len(optimal_zones)
+        else:
+            target_zone = random.randint(0, len(optimal_zones) - 1)
+        
+        target_min, target_max = optimal_zones[target_zone]
+        target_depth = random.randint(target_min, target_max)
+        
+        depth_diff = target_depth - current_depth
+        if abs(depth_diff) > 5:
+            if depth_diff > 0:
+                return CommandCode.DESCEND, min(abs(depth_diff), 25)
+            else:
+                return CommandCode.ASCEND, min(abs(depth_diff), 25)
+        
+        # Small random adjustment - always do some depth change
+        if random.random() < 0.5:
+            return CommandCode.ASCEND, random.randint(5, 12)
+        else:
+            return CommandCode.DESCEND, random.randint(5, 12)
+        
+        # Default small depth change
+        if random.random() < 0.5:
+            return CommandCode.ASCEND, random.randint(3, 10)
+        else:
+            return CommandCode.DESCEND, random.randint(3, 10)
+    
+    def _plan_3d_sweep_search(self):
+        """Plan a 3D sweep search pattern with systematic depth coverage"""
+        submarine = self.game_state.submarine
+        
+        # Calculate distance factor
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        distance_factor = max(0.2, 1.0 - (self.last_ship_distance / effective_max_distance))
+        
+        # 3D sweep combines horizontal movement with continuous depth changes
+        base_move = submarine.speed * submarine.movement_aggressiveness
+        move_distance = min(int(base_move * 2), int(50 * distance_factor))
+        
+        # Systematic sweep pattern
+        self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
+        
+        # Alternating turn pattern
+        if self.search_radius % 2 == 0:
+            turn_angle = 45
+        else:
+            turn_angle = -45
+        self.commands_in_sequence.append((CommandCode.TURN, turn_angle))
+        
+        # Depth change is handled by _plan_depth_change() above
+        
+        self.search_radius += 1
+        if self.search_radius > 20:
+            self.search_radius = 0
+    
+    def _plan_depth_layer_search(self):
+        """Plan a layered search pattern focusing on systematic depth coverage"""
+        submarine = self.game_state.submarine
+        
+        # Calculate distance factor
+        effective_max_distance = submarine.max_safe_distance_from_ship * submarine.movement_aggressiveness
+        distance_factor = max(0.2, 1.0 - (self.last_ship_distance / effective_max_distance))
+        
+        # Spend more time at each depth layer
+        self.depth_layer_timer += 1
+        
+        # Horizontal movement within current depth layer
+        base_move = submarine.speed * submarine.movement_aggressiveness * 2
+        move_distance = min(int(base_move), int(40 * distance_factor))
+        
+        self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
+        
+        # Grid-like turns at each layer
+        if self.depth_layer_timer % 6 == 0:  # Change direction every 6 moves
+            self.commands_in_sequence.append((CommandCode.TURN, 90))
+        elif self.depth_layer_timer % 3 == 0:  # Minor corrections
+            self.commands_in_sequence.append((CommandCode.TURN, random.randint(-30, 30)))
+        
+        # Reset timer when changing layers (handled in depth change logic)
+        if self.depth_layer_timer > 15:  # Spend 15 commands per layer
+            self.depth_layer_timer = 0
+
     def _plan_spiral_search(self):
-        """Plan a spiral search pattern with distance constraints"""
+        """Enhanced spiral search pattern with systematic depth integration"""
         submarine = self.game_state.submarine
         
         # Calculate distance factor based on movement aggressiveness and max range
@@ -153,21 +356,17 @@ class MissionPlanner:
         turn_angle = int(30 + (self.search_radius * 3 * submarine.movement_aggressiveness))
         self.commands_in_sequence.append((CommandCode.TURN, turn_angle))
         
-        # Occasionally change depth
-        if random.random() < 0.3:
-            if random.random() < 0.5:
-                self.commands_in_sequence.append((CommandCode.ASCEND, random.randint(5, 15)))
-            else:
-                self.commands_in_sequence.append((CommandCode.DESCEND, random.randint(5, 15)))
+        # Enhanced depth changes - much more frequent and systematic
+        # Depth changes are now handled by _should_change_depth() and _plan_depth_change()
         
         self.search_radius += 1
         # Scale max search radius based on aggressiveness
         max_search_radius = int(15 + (submarine.movement_aggressiveness * 20))
         if self.search_radius > max_search_radius:
             self.search_radius = 0
-    
+
     def _plan_grid_search(self):
-        """Plan a grid search pattern with distance constraints"""
+        """Enhanced grid search pattern with integrated depth layers"""
         submarine = self.game_state.submarine
         
         # Calculate distance factor based on movement aggressiveness and max range
@@ -178,7 +377,7 @@ class MissionPlanner:
         base_move = submarine.speed * submarine.movement_aggressiveness * 3
         move_distance = min(int(base_move * 2), int(80 * distance_factor))
         
-        # Simple back-and-forth pattern
+        # Enhanced back-and-forth pattern with depth awareness
         if self.search_angle % 180 == 0:
             self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
             self.commands_in_sequence.append((CommandCode.TURN, 90))
@@ -190,10 +389,12 @@ class MissionPlanner:
             self.commands_in_sequence.append((CommandCode.MOVE, int(submarine.speed * 2)))
             self.commands_in_sequence.append((CommandCode.TURN, -90))
         
+        # Depth changes are now handled systematically by _should_change_depth()
+        
         self.search_angle += 180
-    
+
     def _plan_random_search(self):
-        """Plan random exploration with distance constraints"""
+        """Enhanced random exploration with balanced depth changes"""
         submarine = self.game_state.submarine
         
         # Calculate distance factor based on movement aggressiveness and max range
@@ -209,12 +410,8 @@ class MissionPlanner:
         self.commands_in_sequence.append((CommandCode.TURN, random.randint(-turn_range, turn_range)))
         self.commands_in_sequence.append((CommandCode.MOVE, move_distance))
         
-        # Random depth changes
-        if random.random() < 0.4:
-            if random.random() < 0.5:
-                self.commands_in_sequence.append((CommandCode.ASCEND, random.randint(5, 20)))
-            else:
-                self.commands_in_sequence.append((CommandCode.DESCEND, random.randint(5, 20)))
+        # Depth changes are now handled systematically by _should_change_depth()
+        # This ensures much more balanced depth command generation
 
 class SimulationController:
     """Controls the complex simulation with realistic communication and timing"""
@@ -233,6 +430,19 @@ class SimulationController:
         self.detection_events = []
         self.communication_events = []
         
+        # Command type statistics for balanced generation monitoring
+        self.command_type_counts = {
+            "MOVE": 0,
+            "TURN": 0, 
+            "ASCEND": 0,
+            "DESCEND": 0
+        }
+        
+        # Search pattern rotation for balanced command generation
+        self.available_patterns = ["spiral", "grid", "random", "3d_sweep", "depth_layers"]
+        self.pattern_rotation_interval = 500  # Change pattern every 500 ticks
+        self.last_pattern_change_tick = 0
+        
         # Timing
         self.simulation_start_time = time.time()
         self.current_simulation_time = 0.0  # Simulation time in seconds
@@ -241,11 +451,32 @@ class SimulationController:
         """Get current simulation timestamp"""
         return self.simulation_start_time + self.current_simulation_time
     
+    def _rotate_search_pattern(self, current_tick: int):
+        """Rotate search patterns to ensure balanced command generation"""
+        if current_tick - self.last_pattern_change_tick >= self.pattern_rotation_interval:
+            current_pattern_index = self.available_patterns.index(self.mission_planner.search_pattern)
+            next_pattern_index = (current_pattern_index + 1) % len(self.available_patterns)
+            new_pattern = self.available_patterns[next_pattern_index]
+            
+            print(f"Switching search pattern from {self.mission_planner.search_pattern} to {new_pattern} at tick {current_tick}")
+            self.mission_planner.search_pattern = new_pattern
+            
+            # Reset pattern-specific counters
+            self.mission_planner.search_radius = 0
+            self.mission_planner.search_angle = 0
+            self.mission_planner.depth_pattern_cycle = 0
+            self.mission_planner.depth_layer_timer = 0
+            
+            self.last_pattern_change_tick = current_tick
+
     def simulate_tick(self) -> List[SimulationEvent]:
         """Simulate one tick of the game with realistic communication"""
         tick_events = []
         current_tick = self.game_state.tick
         self.current_simulation_time = current_tick * 1.0  # 1 second per tick
+        
+        # Rotate search patterns for balanced command generation
+        self._rotate_search_pattern(current_tick)
         
         # Update communication environment
         self.communication_model.update_environment(
@@ -264,8 +495,8 @@ class SimulationController:
                   self.game_state.submarine.position.y,
                   self.game_state.submarine.position.z)
         
-        # Build command packet
-        raw_cmd = PacketFormatter.build_cmd_packet(cmd, param)
+        # Build command packet - ensure param is an integer
+        raw_cmd = PacketFormatter.build_cmd_packet(cmd, int(param))
         
         # Simulate command transmission using realistic model
         cmd_transmission = self.communication_model.simulate_transmission(
@@ -311,6 +542,10 @@ class SimulationController:
             self.total_commands_received += 1
             command_executed, execution_reason = self.game_state.submarine.execute_command(
                 cmd, param, self.game_state.ship.position)
+            
+            # Track command type statistics
+            if cmd.name in self.command_type_counts:
+                self.command_type_counts[cmd.name] += 1
         
         # Check for object detections
         detected_objects = self.game_state.submarine.detect_objects(self.game_state.objects)
@@ -490,6 +725,14 @@ class SimulationController:
         avg_propagation_delay = sum(e.data.get('propagation_delay', 0) for e in successful_transmissions) / len(successful_transmissions) if successful_transmissions else 0
         avg_total_delay = sum(e.data.get('total_delay', 0) for e in successful_transmissions) / len(successful_transmissions) if successful_transmissions else 0
         
+        # Calculate command balance metrics
+        total_movement_commands = sum(self.command_type_counts.values())
+        depth_commands = self.command_type_counts["ASCEND"] + self.command_type_counts["DESCEND"]
+        horizontal_commands = self.command_type_counts["MOVE"] + self.command_type_counts["TURN"]
+        
+        depth_ratio = depth_commands / total_movement_commands if total_movement_commands > 0 else 0
+        horizontal_ratio = horizontal_commands / total_movement_commands if total_movement_commands > 0 else 0
+        
         return {
             "simulation_summary": {
                 "total_ticks": self.game_state.tick,
@@ -517,6 +760,16 @@ class SimulationController:
                 "average_propagation_delay_ms": avg_propagation_delay * 1000,
                 "average_total_delay_ms": avg_total_delay * 1000,
                 "total_communication_events": total_comm_events
+            },
+            "command_balance_analysis": {
+                "command_type_counts": self.command_type_counts,
+                "total_movement_commands": total_movement_commands,
+                "depth_commands": depth_commands,
+                "horizontal_commands": horizontal_commands,
+                "depth_to_horizontal_ratio": depth_commands / horizontal_commands if horizontal_commands > 0 else 0,
+                "depth_command_percentage": depth_ratio * 100,
+                "horizontal_command_percentage": horizontal_ratio * 100,
+                "improved_balance": depth_ratio >= 0.15  # Target: at least 15% depth commands
             },
             "objects": [
                 {
